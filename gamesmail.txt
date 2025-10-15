@@ -1,0 +1,102 @@
+function love.load()
+    love.window.setTitle("Dino Game")
+    width, height = love.graphics.getDimensions()
+
+    dino = {
+        x = 50,
+        y = height - 100,
+        width = 50,
+        height = 50,
+        speed = 0,
+        gravity = 1,
+        jumpStrength = -20,
+        isJumping = false
+    }
+
+    obstacles = {}
+    obstacleTimer = 0
+    obstacleInterval = 2
+
+    score = 0
+    gameOver = false
+    gameSpeed = 5
+end
+
+function love.update(dt)
+    if gameOver then
+        return
+    end
+
+    score = score + dt * 10
+
+    obstacleTimer = obstacleTimer + dt
+    if obstacleTimer >= obstacleInterval then
+        spawnObstacle()
+        obstacleTimer = 0
+    end
+
+    dino.speed = dino.speed + dino.gravity
+    dino.y = dino.y + dino.speed
+
+    if dino.y >= height - 100 then
+        dino.y = height - 100
+        dino.speed = 0
+        dino.isJumping = false
+    end
+
+    for i, obstacle in ipairs(obstacles) do
+        obstacle.x = obstacle.x - gameSpeed
+
+        if checkCollision(dino, obstacle) then
+            gameOver = true
+        end
+    end
+
+    for i = #obstacles, 1, -1 do
+        if obstacles[i].x < -50 then
+            table.remove(obstacles, i)
+        end
+    end
+end
+
+function love.draw()
+    love.graphics.rectangle("fill", dino.x, dino.y, dino.width, dino.height)
+
+    for i, obstacle in ipairs(obstacles) do
+        love.graphics.rectangle("fill", obstacle.x, obstacle.y, obstacle.width, obstacle.height)
+    end
+
+    love.graphics.print("Score: " .. math.floor(score), 10, 10)
+
+    if gameOver then
+        love.graphics.print("Game Over! Press R to restart", width / 2 - 100, height / 2)
+    end
+end
+
+function love.keypressed(key)
+    if key == "space" and not dino.isJumping and not gameOver then
+        dino.speed = dino.jumpStrength
+        dino.isJumping = true
+    end
+
+    if key == "r" and gameOver then
+        love.load()
+    end
+end
+
+function spawnObstacle()
+    local obstacle = {
+        x = width,
+        y = height - 100,
+        width = 20,
+        height = math.random(20, 50)
+    }
+    table.insert(obstacles, obstacle)
+end
+
+function checkCollision(a, b)
+    return a.x < b.x + b.width and
+           a.x + a.width > b.x and
+           a.y < b.y + b.height and
+           a.y + a.height > b.y
+end
