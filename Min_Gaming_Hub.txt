@@ -1,0 +1,438 @@
+-- Blox Fruits 自動打怪腳本
+-- 作者：eo
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local PathfindingService = game:GetService("PathfindingService")
+
+local Player = Players.LocalPlayer
+local Character = Player.Character or Player.CharacterAdded:Wait()
+local Humanoid = Character:WaitForChild("Humanoid")
+local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
+
+-- 配置設定
+local Config = {
+    AttackDistance = 150, -- 攻擊距離
+    SearchRadius = 500, -- 搜索半徑
+    FarmEnabled = true, -- 是否啟用自動打怪
+    UsePathfinding = true, -- 是否使用路徑尋找
+    AutoCollectDrops = true, -- 是否自動收集掉落物
+    TargetNearest = true -- 是否優先攻擊最近的目標
+}
+
+-- 目標追踪變數
+local CurrentTarget = nil
+local TargetPosition = nil
+local Path = nil
+local Waypoints = nil
+local CurrentWaypointIndex = 1
+local IsAttacking = false
+
+-- 初始化快速攻擊系統
+if not _G.FastAttack then
+    _G.FastAttack = true
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/your-repo/fastattack/main.lua"))()
+end
+
+-- 等待遊戲加載
+repeat wait() until Player:FindFirstChild("PlayerGui")
+
+-- 設置隊伍（如果需要）
+local function SetTeam(teamName)
+    if ReplicatedStorage:FindFirstChild("Remotes") then
+        local Remotes = ReplicatedStorage.Remotes
+        if Remotes:FindFirstChild("CommF_") then
+            Remotes.CommF_:InvokeServer("SetTeam", teamName)
+        end
+    end
+end
+
+-- 尋找附近的敵人
+local function FindNearestEnemy()
+    local nearestEnemy = nil
+    local nearestDistance = Config.SearchRadius
+    local nearestPosition = nil
+    
+    -- 檢查Enemies資料夾
+    if Workspace:FindFirstChild("Enemies") then
+        for _, enemy in pairs(Workspace.Enemies:GetChildren()) do
+            if enemy:FindFirstChild("Humanoid") and enemy.Humanoid.Health > 0 then
+                local head = enemy:FindFirstChild("Head")
+                if head then
+                    local distance = (HumanoidRootPart.Position - head.Position).Magnitude
+                    if distance < nearestDistance then
+                        nearestDistance = distance
+                        nearestEnemy = enemy
+                        nearestPosition = head.Position
+                    end
+                end
+            end
+        end
+    end
+    
+    -- 檢查Map中的敵人
+    if Workspace:FindFirstChild("Map") then
+        for _, model in pairs(Workspace.Map:GetDescendants()) do
+            if model:IsA("Model") and model:FindFirstChild("Humanoid") then
+                if model.Humanoid.Health > 0 then
+                    local head = model:FindFirstChild("Head")
+                    if head then
+                        local distance = (HumanoidRootPart.Position - head.Position).Magnitude
+                        if distance < nearestDistance then
+                            nearestDistance = distance
+                            nearestEnemy = model
+                            nearestPosition = head.Position
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    return nearestEnemy, nearestPosition, nearestDistance
+end
+
+-- 計算移動到目標頭上的位置
+local function CalculateTargetHeadPosition(enemy)
+    if not enemy then return nil end
+    
+    local head = enemy:FindFirstChild("Head")
+    if head then
+        -- 計算目標頭上位置
+        local headPosition = head.Position
+        local headSize = head.Size.Y
+        return headPosition + Vector3.new(0, headSize + 5, 0)
+    end
+    
+    local humanoidRootPart = enemy:FindFirstChild("HumanoidRootPart")
+    if humanoidRootPart then
+        return humanoidRootPart.Position + Vector3.new(0, 10, 0)
+    end
+    
+    return enemy:GetPivot().Position + Vector3.new(0, 10, 0)
+end
+
+-- 創建路徑到目標
+local function CreatePathToTarget(targetPosition)
+    if not Config.UsePathfinding then return nil end
+    
+    local path = PathfindingService:CreatePath({
+        AgentRadius = 2,
+        AgentHeight = 5,
+        AgentCanJump = true,
+        AgentMaxSlope = 60
+    })
+    
+    path:ComputeAsync(HumanoidRootPart.Position, targetPosition)
+    
+    if path.Status == Enum.PathStatus.Success then
+        local waypoints = path:GetWaypoints()
+        if #waypoints > 0 then
+            return path, waypoints
+        end
+    end
+    
+    return nil, nil
+end
+
+-- 跟隨路徑
+local function FollowPath(waypoints)
+    if not waypoints or #waypoints == 0 then return end
+    
+    if CurrentWaypointIndex > #waypoints then
+        CurrentWaypointIndex = 1
+        return
+    end
+    
+    local currentWaypoint = waypoints[CurrentWaypointIndex]
+    Humanoid:MoveTo(currentWaypoint.Position)
+    
+    -- 檢查是否到達航點
+    if (HumanoidRootPart.Position - currentWaypoint.Position).Magnitude < 4 then
+        if currentWaypoint.Action == Enum.PathWaypointAction.Jump then
+            Humanoid.Jump = true
+        end
+        CurrentWaypointIndex += 1
+    end
+end
+
+-- 直接移動到目標
+local function MoveToTargetDirectly(targetPosition)
+    Humanoid:MoveTo(targetPosition)
+end
+
+-- 攻擊目標
+local function AttackTarget(enemy)
+    if not enemy or not enemy:FindFirstChild("Humanoid") then return end
+    
+    -- 檢查是否在攻擊距離內
+    local head = enemy:FindFirstChild("Head")
+    if not head then return end
+    
+    local distance = (HumanoidRootPart.Position - head.Position).Magnitude
+    
+    if distance <= Config.AttackDistance then
+        IsAttacking = true
+        
+        -- 使用快速攻擊
+        if _G.FastAttack and _G.rz_FastAttack then
+            _G.rz_FastAttack:Attack(head, {{enemy, head}})
+        else
+            -- 備用攻擊方法
+            HumanoidRootPart.CFrame = CFrame.new(head.Position + Vector3.new(0, 5, 0), head.Position)
+            
+            -- 模擬點擊
+            local args = {
+                [1] = 0, -- 延遲
+                [2] = "MouseClick" -- 事件類型
+            }
+            
+            -- 嘗試調用遠程攻擊
+            pcall(function()
+                if ReplicatedStorage:FindFirstChild("Remotes") then
+                    local Remotes = ReplicatedStorage.Remotes
+                    if Remotes:FindFirstChild("CommF_") then
+                        Remotes.CommF_:InvokeServer("AttackButton")
+                    end
+                end
+            end)
+        end
+        
+        wait(0.1)
+        IsAttacking = false
+    end
+end
+
+-- 自動收集掉落物
+local function CollectDrops()
+    if not Config.AutoCollectDrops then return end
+    
+    -- 尋找附近的掉落物
+    for _, item in pairs(Workspace:GetChildren()) do
+        if item.Name:find("Drop") or item.Name:find("Fruit") then
+            local distance = (HumanoidRootPart.Position - item.Position).Magnitude
+            if distance < 50 then
+                Humanoid:MoveTo(item.Position)
+                wait(0.5)
+            end
+        end
+    end
+end
+
+-- 主打怪循環
+local function FarmLoop()
+    while Config.FarmEnabled and wait() do
+        -- 確保角色存在
+        if not Character or not Humanoid or Humanoid.Health <= 0 then
+            Character = Player.Character or Player.CharacterAdded:Wait()
+            Humanoid = Character:WaitForChild("Humanoid")
+            HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
+            wait(1)
+            continue
+        end
+        
+        -- 尋找最近的敵人
+        local enemy, enemyPosition, distance = FindNearestEnemy()
+        
+        if enemy and enemyPosition then
+            CurrentTarget = enemy
+            TargetPosition = CalculateTargetHeadPosition(enemy)
+            
+            -- 如果距離較遠，移動到目標
+            if distance > 20 then
+                if Config.UsePathfinding then
+                    Path, Waypoints = CreatePathToTarget(TargetPosition)
+                    if Path and Waypoints then
+                        CurrentWaypointIndex = 1
+                        FollowPath(Waypoints)
+                    else
+                        MoveToTargetDirectly(TargetPosition)
+                    end
+                else
+                    MoveToTargetDirectly(TargetPosition)
+                end
+            else
+                -- 在攻擊範圍內，進行攻擊
+                AttackTarget(enemy)
+                
+                -- 圍繞目標移動以避免被擊中
+                local angle = tick() * 2
+                local offset = Vector3.new(math.cos(angle) * 5, 0, math.sin(angle) * 5)
+                Humanoid:MoveTo(enemyPosition + offset)
+            end
+            
+            -- 檢查目標是否死亡
+            if enemy:FindFirstChild("Humanoid") and enemy.Humanoid.Health <= 0 then
+                CurrentTarget = nil
+                TargetPosition = nil
+                wait(0.5)
+                CollectDrops()
+            end
+        else
+            -- 沒有找到敵人，等待一下
+            CurrentTarget = nil
+            TargetPosition = nil
+            Humanoid:MoveTo(HumanoidRootPart.Position)
+            wait(1)
+        end
+    end
+end
+
+-- 創建簡單的UI控制面板
+local function CreateControlPanel()
+    local ScreenGui = Instance.new("ScreenGui")
+    local Frame = Instance.new("Frame")
+    local Title = Instance.new("TextLabel")
+    local ToggleButton = Instance.new("TextButton")
+    local StatusLabel = Instance.new("TextLabel")
+    local CloseButton = Instance.new("TextButton")
+    
+    ScreenGui.Name = "AutoFarmGUI"
+    ScreenGui.Parent = Player:WaitForChild("PlayerGui")
+    ScreenGui.ResetOnSpawn = false
+    
+    Frame.Name = "MainFrame"
+    Frame.Parent = ScreenGui
+    Frame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    Frame.BorderSizePixel = 0
+    Frame.Position = UDim2.new(0.8, 0, 0.1, 0)
+    Frame.Size = UDim2.new(0, 200, 0, 150)
+    Frame.Active = true
+    Frame.Draggable = true
+    
+    Title.Name = "Title"
+    Title.Parent = Frame
+    Title.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+    Title.BorderSizePixel = 0
+    Title.Size = UDim2.new(1, 0, 0, 30)
+    Title.Font = Enum.Font.GothamBold
+    Title.Text = "自動打怪控制面板"
+    Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Title.TextSize = 14
+    
+    StatusLabel.Name = "StatusLabel"
+    StatusLabel.Parent = Frame
+    StatusLabel.BackgroundTransparency = 1
+    StatusLabel.Position = UDim2.new(0, 10, 0, 40)
+    StatusLabel.Size = UDim2.new(1, -20, 0, 30)
+    StatusLabel.Font = Enum.Font.Gotham
+    StatusLabel.Text = "狀態: 準備中"
+    StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    StatusLabel.TextSize = 14
+    StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    
+    ToggleButton.Name = "ToggleButton"
+    ToggleButton.Parent = Frame
+    ToggleButton.Position = UDim2.new(0.1, 0, 0.5, 0)
+    ToggleButton.Size = UDim2.new(0.8, 0, 0, 30)
+    ToggleButton.Font = Enum.Font.GothamBold
+    ToggleButton.Text = "開始自動打怪"
+    ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ToggleButton.TextSize = 14
+    ToggleButton.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+    
+    CloseButton.Name = "CloseButton"
+    CloseButton.Parent = Frame
+    CloseButton.Position = UDim2.new(0.1, 0, 0.75, 0)
+    CloseButton.Size = UDim2.new(0.8, 0, 0, 30)
+    CloseButton.Font = Enum.Font.Gotham
+    CloseButton.Text = "關閉面板"
+    CloseButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    CloseButton.TextSize = 14
+    CloseButton.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
+    
+    -- 按鈕功能
+    ToggleButton.MouseButton1Click:Connect(function()
+        Config.FarmEnabled = not Config.FarmEnabled
+        
+        if Config.FarmEnabled then
+            ToggleButton.Text = "停止自動打怪"
+            ToggleButton.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
+            StatusLabel.Text = "狀態: 運行中"
+            FarmLoop()
+        else
+            ToggleButton.Text = "開始自動打怪"
+            ToggleButton.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+            StatusLabel.Text = "狀態: 已停止"
+        end
+    end)
+    
+    CloseButton.MouseButton1Click:Connect(function()
+        ScreenGui:Destroy()
+    end)
+    
+    return ScreenGui
+end
+
+-- 初始化腳本
+local function Initialize()
+    print("自動打怪腳本正在啟動...")
+    
+    -- 創建控制面板
+    local controlPanel = CreateControlPanel()
+    
+    -- 等待角色加載
+    wait(2)
+    
+    -- 開始打怪循環
+    if Config.FarmEnabled then
+        spawn(FarmLoop)
+    end
+    
+    print("自動打怪腳本已啟動！")
+    print("攻擊距離: " .. Config.AttackDistance)
+    print("搜索半徑: " .. Config.SearchRadius)
+end
+
+-- 防止腳本多次運行
+if not _G.AutoFarmInitialized then
+    _G.AutoFarmInitialized = true
+    Initialize()
+else
+    warn("自動打怪腳本已經在運行中！")
+end
+
+-- 連接角色死亡事件
+Player.CharacterAdded:Connect(function(char)
+    Character = char
+    Humanoid = char:WaitForChild("Humanoid")
+    HumanoidRootPart = char:WaitForChild("HumanoidRootPart")
+    wait(2) -- 等待角色完全加載
+end)
+
+-- 安全關閉函數
+local function SafeShutdown()
+    Config.FarmEnabled = false
+    if Path then
+        Path:Destroy()
+    end
+    CurrentTarget = nil
+    TargetPosition = nil
+    Humanoid:MoveTo(HumanoidRootPart.Position)
+    print("自動打怪已停止")
+end
+
+-- 提供全局控制函數
+_G.StopAutoFarm = SafeShutdown
+_G.StartAutoFarm = function()
+    Config.FarmEnabled = true
+    spawn(FarmLoop)
+end
+_G.SetAttackDistance = function(distance)
+    Config.AttackDistance = distance
+    print("攻擊距離已設置為: " .. distance)
+end
+_G.SetSearchRadius = function(radius)
+    Config.SearchRadius = radius
+    print("搜索半徑已設置為: " .. radius)
+end
+
+return {
+    Config = Config,
+    Stop = SafeShutdown,
+    Start = _G.StartAutoFarm,
+    SetDistance = _G.SetAttackDistance,
+    SetRadius = _G.SetSearchRadius
+}
